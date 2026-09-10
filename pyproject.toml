@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zebrafish-measure"
+version = "0.1.0"
+description = "Segmentation, measurement, and scale-bar calibration functions for zebrafish larvae images"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Mark Daniel Arndt", email = "markdaniel.arndt@gmail.com" },
+]
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "pillow",
+    "scipy",
+    "scikit-image",
+    "matplotlib",
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "timm>=0.9",
+    "segmentation-models-pytorch>=0.4.0",
+    "huggingface_hub",
+]
+
+[project.urls]
+Homepage = "https://github.com/markdanielarndt/zebrafish-measure"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+zebrafish_measure = ["py.typed"]
