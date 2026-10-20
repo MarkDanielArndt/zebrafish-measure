@@ -34,6 +34,9 @@ dependencies = [
     "huggingface_hub",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
 [project.urls]
 Homepage = "https://github.com/MarkDanielArndt/zebrafish-measure"
 Repository = "https://github.com/MarkDanielArndt/zebrafish-measure"
@@ -44,3 +47,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 zebrafish_measure = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
