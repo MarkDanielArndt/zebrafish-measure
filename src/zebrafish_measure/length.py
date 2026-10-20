@@ -15,6 +15,36 @@ def _get_device():
     import torch
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def select_torch_device(torch, probe_model=None, probe_input_shape=(1, 3, 256, 256)):
+    """Pick a usable torch device, falling back to CPU when CUDA is unusable.
+
+    torch.cuda.is_available() only confirms a CUDA runtime/driver is present,
+    not that the installed build's compiled kernels cover this GPU's compute
+    capability. On a mismatch, a real kernel launch fails with "CUDA error: no
+    kernel image is available for execution on the device".
+
+    A trivial canary op (e.g. a bare add) is not a reliable stand-in for that
+    check: observed on real hardware to succeed -- after a slow one-time CUDA
+    context/JIT warmup -- on a GPU where the model's own conv/batchnorm kernels
+    still failed immediately afterwards. Probing with the real model on a dummy
+    input of its expected shape exercises the same kernels the model actually
+    uses, so the failure (if any) shows up here instead of mid-analysis.
+    When probe_model is None (no model to test yet), only is_available() is
+    checked.
+    """
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+    if probe_model is None:
+        return torch.device("cuda")
+    try:
+        probe_model.to("cuda")
+        with torch.no_grad():
+            probe_model(torch.zeros(*probe_input_shape, device="cuda"))
+        return torch.device("cuda")
+    except RuntimeError:
+        probe_model.to("cpu")
+        return torch.device("cpu")
+
 from collections import OrderedDict
 
 def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0), area_shrink_frac=0.0):
@@ -1015,7 +1045,10 @@ def classification_curvature(image, mask, model, use_threshold, threshold):
     import torch
     import torch.nn.functional as F
     import torchvision.transforms as T
-    device = _get_device()
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = _get_device()
     
     masked_image = apply_mask(image, mask)
 
@@ -1066,9 +1099,9 @@ def _get_fish_classifier_class():
     import timm
 
     class FishClassifier(nn.Module):
-        def __init__(self, num_classes, dense_layer_size, dropout_rate, model_name='resnet101'):
+        def __init__(self, num_classes, dense_layer_size, dropout_rate, model_name='resnet101', pretrained=True):
             super().__init__()
-            self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
+            self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
             self.flatten = nn.Flatten()
             # Get backbone output feature size by passing a dummy input
             with torch.no_grad():
@@ -1100,12 +1133,86 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def load_model():
+def _load_local_model(model_path, device=None):
+    """Load the curvature classifier from a local state-dict file (no network)."""
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"Curvature model not found at {model_path!r}. "
+            "Download models via ZebrafishEmbryoAnalyzerLib.model_downloader before running analysis."
+        )
+
+    import torch
+    FishClassifier = _get_fish_classifier_class()
+
+    best_params = {'dense_layer': 512, 'dropout': 0.2, 'model_name': 'convnext_base'}
+    _log.debug("Using curvature model params: %s", best_params)
+
+    try:
+        # Always deserialize to CPU first -- the final device is decided below, after
+        # the model is built, by actually probing it (see select_torch_device).
+        state_dict = torch.load(model_path, map_location=torch.device("cpu"), weights_only=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load curvature model from {model_path!r} with safe loading. "
+            "The checkpoint may use an incompatible format. "
+            "Re-download the model or obtain a state-dict-only checkpoint. "
+            f"Underlying error: {exc}"
+        ) from exc
+
+    # Unwrap common nested state_dict containers
+    if isinstance(state_dict, dict):
+        if 'state_dict' in state_dict:
+            state_dict = state_dict['state_dict']
+        elif 'model_state_dict' in state_dict:
+            state_dict = state_dict['model_state_dict']
+
+    # Strip DataParallel 'module.' prefix if present
+    if any(k.startswith('module.') for k in state_dict.keys()):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+    model_instance = FishClassifier(
+        num_classes=4,
+        dense_layer_size=best_params['dense_layer'],
+        dropout_rate=best_params['dropout'],
+        model_name=best_params['model_name'],
+        pretrained=False,
+    )
+    missing, unexpected = model_instance.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        _log.warning("Unexpected keys in curvature checkpoint: %s", unexpected)
+    if missing:
+        raise RuntimeError(
+            f"Curvature checkpoint at {model_path!r} is missing required keys: {missing}. "
+            "The checkpoint may be incomplete or incompatible. Re-download the model."
+        )
+    if device is not None:
+        model_instance.to(device)
+    else:
+        # Decide the device by actually probing model_instance (see select_torch_device) --
+        # it moves the model to its final device itself, cuda or a cpu fallback.
+        select_torch_device(torch, probe_model=model_instance)
+    model_instance.eval()
+    return model_instance
+
+
+def load_model(model_path=None, device=None):
+    """Load the curvature classifier.
+
+    With ``model_path=None`` (default) the checkpoint is downloaded from Hugging Face.
+    With a ``model_path`` the checkpoint is loaded from that local state-dict file only
+    (safe ``weights_only`` loading, no network access). ``device`` overrides the
+    automatic device selection.
+    """
+    if model_path is not None:
+        return _load_local_model(model_path, device)
     import torch
     import torch.nn as nn
     from huggingface_hub import hf_hub_download
     FishClassifier = _get_fish_classifier_class()
-    device = _get_device()
+    device = device if device is not None else _get_device()
 
     _HF_TOKEN = os.getenv("HF_TOKEN", None)
     model_path = hf_hub_download(
