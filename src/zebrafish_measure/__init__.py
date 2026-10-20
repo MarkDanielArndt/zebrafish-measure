@@ -69,3 +69,7 @@ def __getattr__(name):
         from . import length
         return length.FishClassifier
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | {"FishClassifier"})

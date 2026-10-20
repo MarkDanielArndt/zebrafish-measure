@@ -55,6 +55,13 @@ containing the logic directly.
   when a path is given, and downloads from Hugging Face when `None` (as before).
 - `select_torch_device` (CUDA probe with CPU fallback) is now public.
 - `classification_curvature` uses the model's device and returns a CPU tensor.
+- Removed the module-level globals `seg.device` and `length.device`; use
+  `select_torch_device` or the `device` parameters instead.
+- `seg._MODEL_TYPES` is now filled lazily on first use; an unknown
+  `model_type` raises `AttributeError` (from the `segmentation_models_pytorch`
+  lookup).
+- `include_eyes=False` combined with `include_edema`/`include_swimbladder` now
+  returns those masks (0.1.x silently returned only the first 3 items).
 
 Defaults keep the 0.1.x behaviour.
 
@@ -70,6 +77,7 @@ result = segmentation_pipeline(
     file_list=["/path/to/fish.png"],
     body_model_path="/path/to/best_model_body.pth",
     eye_model_path="/path/to/best_model_eye.pth",
+    include_eyes=True,
     local_only=True,
     device="cpu",
 )

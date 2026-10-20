@@ -1123,6 +1123,8 @@ def _get_fish_classifier_class():
             return x
 
     FishClassifier.__module__ = __name__
+    FishClassifier.__qualname__ = "FishClassifier"
+    FishClassifier.__name__ = "FishClassifier"
     _FishClassifier = FishClassifier
     return _FishClassifier
 
@@ -1131,6 +1133,10 @@ def __getattr__(name):
     if name == "FishClassifier":
         return _get_fish_classifier_class()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | {"FishClassifier"})
 
 
 def _load_local_model(model_path, device=None):

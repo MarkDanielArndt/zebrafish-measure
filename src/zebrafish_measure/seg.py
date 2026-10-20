@@ -33,7 +33,7 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
         device = _get_device()
     elif isinstance(device, str):
         device = torch.device(device)
-    cache_key = (model_path or filename, encoder_name, model_type, str(device))
+    cache_key = (model_path or filename, encoder_name, model_type, bool(local_only), str(device))
     if cache_key in _UNET_CACHE:
         print(f"{label.capitalize()} served from cache.")
         return _UNET_CACHE[cache_key]
