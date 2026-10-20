@@ -304,10 +304,11 @@ def _fish_axis_local_width(mask_bool, cos_a, sin_a):
     line endpoints are guaranteed to be actual mask pixels.
 
     Returns (width_val_px, p1, p2) in pixel (row, col) coords, or
-    (0.0, None, None) if the mask is empty.
+    (0.0, None, None) if the mask has fewer than 2 pixels (the tol-widening
+    loop below can never reach 2 selected pixels otherwise, looping forever).
     """
     ys, xs = np.where(mask_bool)
-    if len(ys) == 0:
+    if len(ys) < 2:
         return 0.0, None, None
     along = xs * cos_a + ys * sin_a
     across = -xs * sin_a + ys * cos_a
@@ -1022,7 +1023,7 @@ def classification_curvature(image, mask, model, use_threshold, threshold):
 
     if cropped_image is None:
         # Fully-black masked image (empty segmentation) — return uncertain curvature
-        return None, torch.tensor([5]).to(device)
+        return None, torch.tensor([5])
 
     # Ensure the masked image is in RGB format
     masked_image_rgb = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
@@ -1047,9 +1048,10 @@ def classification_curvature(image, mask, model, use_threshold, threshold):
 
     if use_threshold:
         if confs < threshold:
-            curvature = torch.tensor([5]).to(device)
+            curvature = torch.tensor([5])
 
-    return cropped_image, curvature
+    # return on CPU so .numpy() works on GPU machines
+    return cropped_image, curvature.cpu()
 
 class FishClassifier(nn.Module):
     def __init__(self, num_classes, dense_layer_size, dropout_rate, model_name='resnet101'):
