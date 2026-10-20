@@ -48,7 +48,7 @@ def test_load_unet_uses_no_pretrained_weights(monkeypatch, tmp_path):
 
     monkeypatch.setitem(seg._MODEL_TYPES, "Unet", FakeModel)
     monkeypatch.setattr(seg, "_UNET_CACHE", {})
-    monkeypatch.setattr(seg, "hf_hub_download", lambda *a, **k: pytest.fail("download attempted"))
+    monkeypatch.setattr(seg, "hf_hub_download", lambda *a, **k: pytest.fail("download attempted"), raising=False)
 
     model = seg._load_unet_model(model_path=str(ckpt), encoder_name="vgg16", model_type="Unet")
     assert model is not None

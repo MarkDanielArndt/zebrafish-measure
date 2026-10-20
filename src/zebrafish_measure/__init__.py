@@ -14,7 +14,6 @@ from .length import (
     normalize_images,
     apply_mask,
     classification_curvature,
-    FishClassifier,
     load_model,
     plot_edges_with_curvature,
     compute_curvature_profile,
@@ -61,3 +60,10 @@ __all__ = [
 ]
 
 __version__ = "0.1.0"
+
+
+def __getattr__(name):
+    if name == "FishClassifier":
+        from . import length
+        return length.FishClassifier
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

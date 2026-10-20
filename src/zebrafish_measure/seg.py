@@ -2,15 +2,14 @@ from .seg_helper import load_images_from_path, segment_fish, fill_holes, grow_ma
 import os
 import cv2
 import numpy as np
-import torch
-from segmentation_models_pytorch import Unet, FPN, Segformer
-from huggingface_hub import hf_hub_download
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _get_device():
+    import torch
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 _UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name, model_type)
 
-_MODEL_TYPES = {"Unet": Unet, "FPN": FPN, "Segformer": Segformer}
+_MODEL_TYPES = {}  # filled lazily (setdefault) on first use in _load_unet_model
 
 # Measured systematic bias between the swim-bladder model's raw 0.5-probability
 # mask boundary and the true anatomical edge (mask consistently over-inclusive
@@ -24,6 +23,13 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
     Load a binary segmentation model (Unet or FPN) from a local path or from Hugging Face Hub.
     Returns the model instance when successful, otherwise None.
     """
+    import torch
+    from huggingface_hub import hf_hub_download
+    from segmentation_models_pytorch import Unet, FPN, Segformer
+    _MODEL_TYPES.setdefault("Unet", Unet)
+    _MODEL_TYPES.setdefault("FPN", FPN)
+    _MODEL_TYPES.setdefault("Segformer", Segformer)
+    device = _get_device()
     cache_key = (model_path or filename, encoder_name, model_type)
     if cache_key in _UNET_CACHE:
         print(f"{label.capitalize()} served from cache.")
@@ -193,6 +199,9 @@ def segmentation_pipeline(
             print(f"WARNING: Swim bladder model unavailable at {swimbladder_repo_id}/{swimbladder_model_filename}. Returning empty swim bladder masks.")
         else:
             print("Swim bladder model loaded successfully!")
+
+    import torch
+    device = _get_device()
 
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])

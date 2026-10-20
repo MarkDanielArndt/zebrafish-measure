@@ -1,6 +1,5 @@
 import os
 from PIL import Image
-import torch
 import numpy as np
 import cv2
 from scipy.ndimage import distance_transform_edt
@@ -41,6 +40,7 @@ def segment_fish(image, model, biggest_only=True):
     #image_tensor = transform(image).unsqueeze(0)  # Add batch dimension
     image_tensor = image
     
+    import torch
     with torch.no_grad():
         # Get predictions from the model
         prediction = model(image_tensor)
