@@ -18,23 +18,29 @@ _MODEL_TYPES = {}  # filled lazily (setdefault) on first use in _load_unet_model
 # consistent bias across both resolutions, so it is left uncorrected.
 _SWIMBLADDER_BOUNDARY_OFFSET_PX = -0.73
 
-def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16", model_type="Unet"):
+def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16", model_type="Unet", local_only=False, device=None):
     """
     Load a binary segmentation model (Unet or FPN) from a local path or from Hugging Face Hub.
     Returns the model instance when successful, otherwise None.
+
+    With local_only=True Hugging Face is never contacted: the checkpoint must exist at
+    `model_path`, is loaded with torch.load(weights_only=True), and any problem raises
+    RuntimeError instead of returning None. `device` (str or torch.device; None -> auto)
+    selects where the model is placed.
     """
     import torch
-    from huggingface_hub import hf_hub_download
-    from segmentation_models_pytorch import Unet, FPN, Segformer
-    _MODEL_TYPES.setdefault("Unet", Unet)
-    _MODEL_TYPES.setdefault("FPN", FPN)
-    _MODEL_TYPES.setdefault("Segformer", Segformer)
-    device = _get_device()
-    cache_key = (model_path or filename, encoder_name, model_type)
+    if device is None:
+        device = _get_device()
+    elif isinstance(device, str):
+        device = torch.device(device)
+    cache_key = (model_path or filename, encoder_name, model_type, str(device))
     if cache_key in _UNET_CACHE:
         print(f"{label.capitalize()} served from cache.")
         return _UNET_CACHE[cache_key]
 
+    if model_type not in _MODEL_TYPES:
+        import segmentation_models_pytorch as smp
+        _MODEL_TYPES[model_type] = getattr(smp, model_type)
     model_cls = _MODEL_TYPES[model_type]
     # encoder_weights=None: the fine-tuned checkpoint loaded below (strict=True) overwrites
     # every encoder weight anyway, so downloading/loading ImageNet-pretrained weights first
@@ -42,10 +48,33 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
     model = model_cls(encoder_name=encoder_name, encoder_weights=None, in_channels=3, classes=1)
     resolved_path = None
 
+    if local_only:
+        if not (model_path and os.path.isfile(model_path)):
+            raise RuntimeError(
+                f"{label.capitalize()} not found at {model_path!r}. "
+                "Download models via ZebrafishEmbryoAnalyzerLib.model_downloader before running analysis."
+            )
+        try:
+            state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+            model.load_state_dict(state_dict)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load {label} model from {model_path!r} with safe loading. "
+                "The checkpoint may use an incompatible format. "
+                "Re-download the model or obtain a state-dict-only checkpoint. "
+                f"Underlying error: {exc}"
+            ) from exc
+        model.eval()
+        model = model.to(device)
+        print(f"{label.capitalize()} loaded from {model_path} (device={device})")
+        _UNET_CACHE[cache_key] = model
+        return model
+
     if model_path and os.path.exists(model_path):
         resolved_path = model_path
     elif repo_id and filename:
         try:
+            from huggingface_hub import hf_hub_download
             resolved_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
@@ -102,6 +131,11 @@ def segmentation_pipeline(
     swimbladder_model_filename="best_model_swimmbladder_256_segformer_mit_b3.pth",
     swimbladder_encoder_name="mit_b3",
     swimbladder_model_type="Segformer",
+    body_model_path=None,
+    local_only=False,
+    device=None,
+    swimbladder_biggest_only=True,
+    swimbladder_boundary_offset_px=_SWIMBLADDER_BOUNDARY_OFFSET_PX,
 ):
     """
     Perform body segmentation on all images in the specified folder or file list.
@@ -113,13 +147,20 @@ def segmentation_pipeline(
     Optional edema segmentation can be enabled by setting include_edema=True.
     Optional swim bladder segmentation can be enabled by setting include_swimbladder=True.
 
-    Returns (always in this fixed order, only including what was requested):
-        - default: (original_images, segmented_images, grown_images)
-        - if include_eyes=True: (..., eyes_images)
-        - if include_eyes=True and include_edema=True: (..., eyes_images, edema_images)
-        - if include_eyes=True and include_swimbladder=True: (..., eyes_images, swimbladder_images)
-        - if include_eyes=True and include_edema=True and include_swimbladder=True:
-          (..., eyes_images, edema_images, swimbladder_images)
+    Returns a tuple, always in this fixed order, with each optional element present only
+    if requested (independently of the others):
+        (original_images, segmented_images, grown_images,
+         [eyes_images if include_eyes], [edema_images if include_edema],
+         [swimbladder_images if include_swimbladder])
+
+    Optional keyword parameters for embedding in other applications:
+        body_model_path: local checkpoint for the body model (else Hugging Face Hub).
+        local_only: never contact Hugging Face; a missing/unloadable model (including
+            requested eye/edema/swim bladder models) raises RuntimeError.
+        device: str or torch.device; None selects cuda if available, else cpu.
+        swimbladder_biggest_only: keep only the largest swim bladder component.
+        swimbladder_boundary_offset_px: boundary correction for the swim bladder mask;
+            None or 0 disables it.
     """
     if file_list is not None:
         images = []
@@ -147,6 +188,9 @@ def segmentation_pipeline(
         force_download=body_force_download,
         encoder_name=body_encoder_name,
         model_type=body_model_type,
+        model_path=body_model_path,
+        local_only=local_only,
+        device=device,
     )
 
     if loaded_model is None:
@@ -162,8 +206,12 @@ def segmentation_pipeline(
             label="eye model",
             encoder_name=eye_encoder_name,
             model_type=eye_model_type,
+            local_only=local_only,
+            device=device,
         )
         if eyes_model is None:
+            if local_only:
+                raise RuntimeError("Eye model could not be loaded (local_only=True).")
             print(f"WARNING: Eye model unavailable at {eye_repo_id}/{eye_model_filename}. Returning empty eye masks.")
         else:
             print("Eye model loaded successfully!")
@@ -178,8 +226,12 @@ def segmentation_pipeline(
             label="edema model",
             encoder_name=edema_encoder_name,
             model_type=edema_model_type,
+            local_only=local_only,
+            device=device,
         )
         if edema_model is None:
+            if local_only:
+                raise RuntimeError("Edema model could not be loaded (local_only=True).")
             print(f"WARNING: Edema model unavailable at {edema_repo_id}/{edema_model_filename}. Returning empty edema masks.")
         else:
             print("Edema model loaded successfully!")
@@ -194,14 +246,21 @@ def segmentation_pipeline(
             label="swim bladder model",
             encoder_name=swimbladder_encoder_name,
             model_type=swimbladder_model_type,
+            local_only=local_only,
+            device=device,
         )
         if swimbladder_model is None:
+            if local_only:
+                raise RuntimeError("Swim bladder model could not be loaded (local_only=True).")
             print(f"WARNING: Swim bladder model unavailable at {swimbladder_repo_id}/{swimbladder_model_filename}. Returning empty swim bladder masks.")
         else:
             print("Swim bladder model loaded successfully!")
 
     import torch
-    device = _get_device()
+    if device is None:
+        device = _get_device()
+    elif isinstance(device, str):
+        device = torch.device(device)
 
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])
@@ -239,9 +298,11 @@ def segmentation_pipeline(
 
         if include_swimbladder:
             if swimbladder_model is not None:
-                segmented_swimbladder, _ = segment_fish(input_image, swimbladder_model, biggest_only=True)
-                segmented_swimbladder_array = adjust_mask_boundary(
-                    np.array(segmented_swimbladder), _SWIMBLADDER_BOUNDARY_OFFSET_PX)
+                segmented_swimbladder, _ = segment_fish(input_image, swimbladder_model, biggest_only=swimbladder_biggest_only)
+                segmented_swimbladder_array = np.array(segmented_swimbladder)
+                if swimbladder_boundary_offset_px is not None and swimbladder_boundary_offset_px != 0:
+                    segmented_swimbladder_array = adjust_mask_boundary(
+                        segmented_swimbladder_array, swimbladder_boundary_offset_px)
             else:
                 segmented_swimbladder_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
             swimbladder_images.append(segmented_swimbladder_array)
@@ -250,13 +311,11 @@ def segmentation_pipeline(
         segmented_images.append(filled_image)
         original_images.append(original_image)
 
+    result = [original_images, segmented_images, grown_images]
     if include_eyes:
-        if include_edema and include_swimbladder:
-            return original_images, segmented_images, grown_images, eyes_images, edema_images, swimbladder_images
-        if include_edema:
-            return original_images, segmented_images, grown_images, eyes_images, edema_images
-        if include_swimbladder:
-            return original_images, segmented_images, grown_images, eyes_images, swimbladder_images
-        return original_images, segmented_images, grown_images, eyes_images
-
-    return original_images, segmented_images, grown_images
+        result.append(eyes_images)
+    if include_edema:
+        result.append(edema_images)
+    if include_swimbladder:
+        result.append(swimbladder_images)
+    return tuple(result)
